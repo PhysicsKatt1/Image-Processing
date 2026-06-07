@@ -1,0 +1,125 @@
+##### import #####
+import cv2 as cv2
+import numpy as np
+import pandas as pd
+from glob2 import glob
+import os.path
+from itertools import chain
+from PIL import Image
+
+##### load files and convert to jpeg to save memory #####
+path = r''
+folder = ''
+newPath = path + folder + '/JPEGS'   # saves jpegs in separate folder
+
+if not os.path.exists(newPath):
+    print('Converting .tif to .jpeg')
+    os.makedirs(newPath)
+
+    for infile in os.listdir(path + folder):
+        if infile[-3:] == 'tif':
+            im = cv2.imread(path + folder + '/' + infile)
+            im = Image.fromarray(im)
+            infile = infile[:-4]
+            im.save(newPath + '/' + infile + '.jpeg')
+
+elif os.path.exists(newPath):
+    print('.jpegs exist.')
+
+AllFiles = glob(os.path.join(newPath, "**", "*.jpeg"), recursive = True)
+AllMaskFiles = glob(os.path.join(newPath, "**", "*.jpeg"), recursive = True)
+
+ALLfiles = []
+ALLmaskFiles = []
+for allfiles, allmaskfiles in zip(AllFiles, AllMaskFiles):
+   af = cv2.imread(allfiles)
+   amf = cv2.imread(allmaskfiles)
+   ALLfiles.append(af)
+   ALLmaskFiles.append(amf)
+
+##### Process images #####
+N = np.arange(0, len(AllFiles))
+drawing = False
+xi, yi, r = 0, 0, 0
+ROImean = []
+ROIstddev = []
+backgroundMean = []
+backgroundStdev = []
+totalMean = []
+totalStddev = []
+cnr = []
+R = []
+
+for file, maskFile, n in zip(ALLfiles[:3], ALLmaskFiles[:3], N[:3]):
+   ##### select ROI #####
+   print('Opening image number {}'.format(n))
+   ROIx = []
+   ROIy = []
+   backgroundX = []
+   backgroundY = []
+   def drawCircle(click, x, y, flags, params):
+       global xi, yi, drawing, r
+
+       if click == cv2.EVENT_LBUTTONDOWN:
+           drawing = True
+           xi, yi = x, y
+
+       if click == cv2.EVENT_RBUTTONDOWN:
+           r = int(np.sqrt((x - xi) ** 2 + (y - yi) ** 2))
+           R.append(r)
+           cv2.circle(maskFile, (xi, yi), r, 255, -1)
+           roiMask = np.where(maskFile == 255)
+           bgMask = np.where(maskFile != 255)
+           ROIx.append(roiMask[1]), ROIy.append(roiMask[0])
+           backgroundX.append(bgMask[1]), backgroundY.append(bgMask[0])
+           drawing = False
+
+   while True:
+       cv2.namedWindow('image')
+       cv2.setMouseCallback('image', drawCircle)
+       cv2.imshow('image', maskFile)
+       if cv2.waitKey(1) == 27:
+           break
+
+   cv2.destroyAllWindows()
+
+   print('Finding ROI and background')
+   r_x = list(chain(*ROIx))
+   r_y = list(chain(*ROIy))
+   ROI = file[r_y][r_x]
+
+   b_x = list(chain(*backgroundX))
+   b_y = list(chain(*backgroundY))
+
+   len1, len2 = int(len(b_x) / 3), int(2 * len(b_x) / 3)
+   x1 = b_x[:len1]
+   x2 = b_x[len1:len2]
+   y1 = b_y[:len1]
+   y2 = b_y[len1:len2]
+
+   bg1 = file[y1][x1]  # this and the following line if code breaks while "Finding ROI and background"
+   background = (bg1)[y2][x2]
+
+   # background = file[y1][x1]           # uncomment if preceeding 2 lines are commented
+   # estimates background from a sample of pixels assuming uniform background intensity
+
+   ##### analyze image #####
+   print('Calculating statistics')
+   ROImean.append(np.mean(ROI))
+   ROIstddev.append(np.std(ROI))
+   backgroundMean.append(np.mean(background))
+   backgroundStdev.append(np.std(background[:77200]))  # an estimate because the full array causes memory allocation issues
+   totalMean.append(np.mean(file))
+   totalStddev.append(np.std(file))
+
+   del ROIx, ROIy, backgroundX, backgroundY, r_x, r_y, ROI, b_x, b_y, background, x1, x2, y1, y2
+
+for roimean, backgroundmean, roistddev, backgroundstddev in zip(ROImean, backgroundMean, ROIstddev, backgroundStdev):
+    cnr.append(abs(roimean - backgroundmean) / (np.sqrt(roistddev ** 2 + backgroundstddev ** 2)))
+
+##### save image data #####
+print('Saving')
+imageData = pd.DataFrame({'file': AllFiles[61:75], 'radius': R, 'ROImean': ROImean, 'ROIstddev': ROIstddev,
+                          'backgroundMean': backgroundMean, 'backgroundStddev': backgroundStdev,
+                          'totalMean': totalMean, 'totalStddev': totalStddev, 'cnr': cnr})
+imageData.to_csv(path + folder + '/ImageStats.csv', index=True)
